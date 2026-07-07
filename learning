@@ -174,7 +174,7 @@ first_metrics = {
 print("Вывод детекции")
 
 # Путь к изображениям
-images_path = 'H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'
+images_path = 'путь.../YOLO/yolo_dataset/images/val'
 
 if not os.path.exists(images_path):
     images_path = './yolo_dataset/images/val'
@@ -358,8 +358,8 @@ plt.show()
 print("Примеры детекции второй итерации")
 
 # Путь к изображениям
-if os.path.exists('H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'):
-    images_path = 'H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'
+if os.path.exists('путь к .../YOLO/yolo_dataset/images/val'):
+    images_path = 'путь .../YOLO/yolo_dataset/images/val'
 else:
     images_path = './yolo_dataset/images/val'
 
