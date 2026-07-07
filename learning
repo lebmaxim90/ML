@@ -1,0 +1,474 @@
+from ultralytics import YOLO
+model = YOLO('yolo11n.pt')
+model.to(device)
+model.eval()  # режим инференса
+print("Модель загружена и переведена в режим инференса.")
+
+# путь к датасету
+PATH_TO_IMAGES = ""
+PATH_TO_JSON = ""
+
+print(f"Изображения: {PATH_TO_IMAGES}")
+print(f"Аннотации: {PATH_TO_JSON}")
+
+# Экспортируем в YOLO формат
+BASE_DIR = "./yolo_dataset"
+os.makedirs(f"{BASE_DIR}/images/train", exist_ok=True)
+os.makedirs(f"{BASE_DIR}/images/val", exist_ok=True)
+os.makedirs(f"{BASE_DIR}/labels/train", exist_ok=True)
+os.makedirs(f"{BASE_DIR}/labels/val", exist_ok=True)
+
+print(f"\n2. Создана структура папок:")
+
+print(f"\n3. Загрузка аннотаций COCO...")
+from pycocotools.coco import COCO
+coco = COCO(PATH_TO_JSON)
+
+# Получаем все категории
+categories = coco.loadCats(coco.getCatIds())
+cat_id_to_name = {cat['id']: cat['name'] for cat in categories}
+cat_name_to_yolo_id = {name: idx for idx, (_, name) in enumerate(cat_id_to_name.items())}
+
+print(f"   Найдено классов: {len(categories)}")
+print(f"   Примеры классов: {list(cat_name_to_yolo_id.keys())[:10]}")
+print(f"\n4. Конвертация аннотаций в YOLO формат...")
+
+# Получаем все изображения
+img_ids = coco.getImgIds()
+print(f"   Всего изображений: {len(img_ids)}")
+
+# Возьмем первые 500 для скорости
+img_ids = img_ids[:500]
+converted = 0
+
+for img_id in img_ids:
+    # Информация об изображении
+    img_info = coco.loadImgs(img_id)[0]
+    img_filename = img_info['file_name']
+    img_width = img_info['width']
+    img_height = img_info['height']
+    
+    # Аннотации для этого изображения
+    ann_ids = coco.getAnnIds(imgIds=img_id)
+    anns = coco.loadAnns(ann_ids)
+    
+    # Создаем .txt файл (все в val для простоты)
+    txt_filename = os.path.splitext(img_filename)[0] + '.txt'
+    txt_path = os.path.join(f"{BASE_DIR}/labels/val", txt_filename)
+    
+    with open(txt_path, 'w') as f:
+        for ann in anns:
+            # COCO bbox: [x, y, width, height]
+            x, y, w, h = ann['bbox']
+            
+            # Конвертируем в YOLO формат: [x_center, y_center, width, height] (нормализованные)
+            x_center = (x + w/2) / img_width
+            y_center = (y + h/2) / img_height
+            w_norm = w / img_width
+            h_norm = h / img_height
+            
+            # Ограничиваем значения от 0 до 1
+            x_center = max(0, min(1, x_center))
+            y_center = max(0, min(1, y_center))
+            w_norm = max(0, min(1, w_norm))
+            h_norm = max(0, min(1, h_norm))
+            
+            # Получаем class_id
+            cat_name = cat_id_to_name[ann['category_id']]
+            class_id = cat_name_to_yolo_id[cat_name]
+            
+            f.write(f"{class_id} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}\n")
+    
+    # Копируем изображение
+    src_img = os.path.join(PATH_TO_IMAGES, img_filename)
+    dst_img = os.path.join(f"{BASE_DIR}/images/val", img_filename)
+    if os.path.exists(src_img):
+        shutil.copy2(src_img, dst_img)
+    
+    converted += 1
+    if converted % 50 == 0:
+        print(f"   Обработано {converted}/{len(img_ids)} изображений")
+
+print(f"\n5. Создание data.yaml...")
+
+# 5. Создаем data.yaml
+data_yaml = {
+    'path': os.path.abspath(BASE_DIR),  # абсолютный путь
+    'train': 'images/val',               # используем val как train
+    'val': 'images/val',                  # и как validation
+    'nc': len(cat_name_to_yolo_id),       # number of classes
+    'names': list(cat_name_to_yolo_id.keys())  # class names
+}
+
+yaml_path = os.path.join(BASE_DIR, 'data.yaml')
+with open(yaml_path, 'w', encoding='utf-8') as f:
+    yaml.dump(data_yaml, f, default_flow_style=False, allow_unicode=True)
+
+print(f"Датасет создан в: {os.path.abspath(BASE_DIR)}")
+print(f"data.yaml: {yaml_path}")
+print(f"\nСодержимое data.yaml:")
+print(f"  path: {data_yaml['path']}")
+print(f"  train: {data_yaml['train']}")
+print(f"  val: {data_yaml['val']}")
+print(f"  nc: {data_yaml['nc']}")
+print(f"  names: {data_yaml['names'][:10]}...")
+
+# Проверяем результат
+print(f"\nСтатистика:")
+print(f"   Изображений: {len(os.listdir(f'{BASE_DIR}/images/val'))}")
+print(f"   Файлов разметки: {len(os.listdir(f'{BASE_DIR}/labels/val'))}")
+
+# Сохраняем для следующих ячеек
+yaml_path_for_next = yaml_path
+
+# Загружаем модель
+model = YOLO('yolo11n.pt')
+
+# Обучение
+results = model.train(
+    data='путь к .../data.yaml',
+    epochs=30,
+    imgsz=640,
+    batch=16,
+    device=device,
+    name='first_iteration',
+    exist_ok=True,
+    verbose=True
+)
+
+print("\nОбучение первой итерации завершено")
+
+
+print("Анализ по первой итерации")
+
+results_img = 'runs/detect/first_iteration/results.png'
+if os.path.exists(results_img):
+    print("\nГрифики обучения:")
+    display(IPImage(filename=results_img))
+    
+
+print("Оценка метрик модели")
+
+metrics = model.val()
+
+# Сохраняем метрики первой итерации
+precision_1 = metrics.box.mp
+recall_1 = metrics.box.mr
+map50_1 = metrics.box.map50
+map95_1 = metrics.box.map
+
+print("\nМетрики по первой итерации:")
+print(f"   Precision (точность): {precision_1:.4f}")
+print(f"   Recall (полнота): {recall_1:.4f}")
+print(f"   mAP@0.5: {map50_1:.4f}")
+print(f"   mAP@0.5:0.95: {map95_1:.4f}")
+
+# Сохраняем для сравнения
+first_metrics = {
+    'precision': precision_1,
+    'recall': recall_1,
+    'map50': map50_1,
+    'map95': map95_1
+}
+
+print("Вывод детекции")
+
+# Путь к изображениям
+images_path = 'H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'
+
+if not os.path.exists(images_path):
+    images_path = './yolo_dataset/images/val'
+
+if os.path.exists(images_path):
+    all_images = [f for f in os.listdir(images_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+    print(f"Всего изображений: {len(all_images)}")
+    
+    # Выбираем 4 случайных изображения
+    num_samples = min(4, len(all_images))
+    selected = random.sample(all_images, num_samples)
+    
+    # Создаем сетку 2x2 для отображения
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes = axes.flatten()
+    
+    print("\nПримеры детекции:")
+    
+    for idx, img_file in enumerate(selected):
+        img_path = os.path.join(images_path, img_file)
+        
+        # Предсказание
+        results = model(img_path)
+        boxes = results[0].boxes
+        names = results[0].names
+        
+        print(f"\nИзображение {idx+1}: {img_file}")
+        print(f"    Найдено объектов: {len(boxes)}")
+        
+        if len(boxes) > 0:
+            print(" Топ-3 объекта по уверенности:")
+            # Сортируем по уверенности
+            confs = boxes.conf.cpu().numpy()
+            sorted_idx = np.argsort(confs)[::-1]
+            
+            for j, bidx in enumerate(sorted_idx[:3]):
+                class_name = names[int(boxes.cls[bidx])]
+                conf = boxes.conf[bidx].item()
+                print(f"      {j+1}. {class_name}: {conf:.3f}")
+        
+        # Отображаем
+        axes[idx].imshow(results[0].plot())
+        axes[idx].set_title(f'{img_file}\n({len(boxes)} объектов)', fontsize=12)
+        axes[idx].axis('off')
+    
+    plt.suptitle('Детекции первой итерацмм', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Показываем валидационные батчи
+    print("\nПримеры:")
+    val_batches = [f for f in os.listdir('runs/detect/first_iteration') 
+                   if f.startswith('val_batch') and f.endswith('.jpg')]
+    
+    for i, batch in enumerate(val_batches[:2]):  # первые 2
+        print(f"\n   Батч {i+1}: {batch}")
+        display(IPImage(filename=f'runs/detect/first_iteration/{batch}'))
+else:
+    print("Папка с изображениями не найдена")
+
+# Загружаем модель для следующей итерации
+model_second = YOLO('yolo11n.pt')
+
+# Обучение с новыми параметрами
+results_second = model_second.train(
+    data='путь к .../data.yaml',
+    epochs=70,
+    imgsz=832,
+    batch=16,
+    lr0=0.005,
+    lrf=0.01,
+    momentum=0.937,
+    weight_decay=0.0005,
+    warmup_epochs=3,
+    cos_lr=True,
+    device=device,
+    seed=42,
+    project='runs/detect',
+    name='exp_second_iter',
+    exist_ok=True,
+    verbose=True
+)
+
+print("\n" + "-"*70)
+print("Анализ графиков обучения второй итерации")
+
+results_img_2 = 'runs/detect/exp_second_iter/results.png'
+if os.path.exists(results_img_2):
+    print("\nГрафики обученя второй итерации:")
+    display(IPImage(filename=results_img_2))
+    
+
+print("\n" + "-"*70)
+print("Оценка метрик второй итерации")
+
+
+metrics_second = model_second.val()
+
+# Метрики второй итерации
+precision_2 = metrics_second.box.mp
+recall_2 = metrics_second.box.mr
+map50_2 = metrics_second.box.map50
+map95_2 = metrics_second.box.map
+
+print("\nМетрики второй итерации:")
+print(f"    Precision (точность): {precision_2:.4f}")
+print(f"    Recall (полнота): {recall_2:.4f}")
+print(f"    mAP@0.5: {map50_2:.4f}")
+print(f"    mAP@0.5:0.95: {map95_2:.4f}")
+
+
+print("Сравним метрики первой и второй итерации")
+
+# Проверяем наличие метрик первой итерации
+try:
+    p1, r1, m1 = precision_1, recall_1, map50_1
+    # Добавляем map95_1, если она существует
+    try:
+        map95_1 = map95_1
+    except NameError:
+        map95_1 = 0
+except NameError:
+    print("Метрики первой итерации не найдены, загружаем из модели")
+    model_first = YOLO('runs/detect/first_iteration/weights/best.pt')
+    metrics_first = model_first.val()
+    p1, r1, m1 = metrics_first.box.mp, metrics_first.box.mr, metrics_first.box.map50
+    map95_1 = metrics_first.box.map
+
+# Таблица сравнения
+print("\nСравнительная таблица метрик:")
+print("-" * 60)
+print(f"{'Метрика':<20} {'1 итерация':<15} {'2 итерация':<15} {'Изменение':<15}")
+print("-" * 60)
+print(f"{'Precision':<20} {p1:<15.4f} {precision_2:<15.4f} {precision_2-p1:+.4f}")
+print(f"{'Recall':<20} {r1:<15.4f} {recall_2:<15.4f} {recall_2-r1:+.4f}")
+print(f"{'mAP@0.5':<20} {m1:<15.4f} {map50_2:<15.4f} {map50_2-m1:+.4f}")
+print(f"{'mAP@0.5:0.95':<20} {map95_1:<15.4f} {map95_2:<15.4f} {map95_2-map95_1:+.4f}")
+print("-" * 60)
+
+# Визуализация сравнения
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+metrics_names = ['Precision', 'Recall', 'mAP@0.5']
+first_vals = [p1, r1, m1]
+second_vals = [precision_2, recall_2, map50_2]
+
+x = np.arange(len(metrics_names))
+width = 0.35
+
+axes[0].bar(x - width/2, first_vals, width, label='1 итерация', color='skyblue')
+axes[0].bar(x + width/2, second_vals, width, label='2 итерация', color='lightcoral')
+axes[0].set_xlabel('Метрики')
+axes[0].set_ylabel('Значение')
+axes[0].set_title('Сравнение метрик')
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(metrics_names)
+axes[0].legend()
+axes[0].set_ylim(0, 1)
+
+# График изменений
+changes = [precision_2-p1, recall_2-r1, map50_2-m1]
+colors = ['green' if c > 0 else 'red' for c in changes]
+axes[1].bar(metrics_names, changes, color=colors)
+axes[1].axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+axes[1].set_title('Изменение метрик')
+axes[1].set_ylabel('Δ')
+
+# Текстовое сравнение
+axes[2].axis('off')
+axes[2].text(0.1, 0.8, f'Precision: {p1:.3f} → {precision_2:.3f}', fontsize=12)
+axes[2].text(0.1, 0.6, f'Recall: {r1:.3f} → {recall_2:.3f}', fontsize=12)
+axes[2].text(0.1, 0.4, f'mAP@0.5: {m1:.3f} → {map50_2:.3f}', fontsize=12)
+axes[2].text(0.1, 0.2, f'Изменение: {precision_2-p1:+.3f}', 
+             fontsize=14, fontweight='bold', 
+             color='green' if precision_2-p1 > 0 else 'red')
+
+plt.tight_layout()
+plt.show()
+
+
+print("Примеры детекции второй итерации")
+
+# Путь к изображениям
+if os.path.exists('H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'):
+    images_path = 'H:/Уч. файлы/Системы искусственного интеллекта/YOLO/yolo_dataset/images/val'
+else:
+    images_path = './yolo_dataset/images/val'
+
+if os.path.exists(images_path):
+    all_images = [f for f in os.listdir(images_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+    
+    # Выбираем 16 случайных изображений
+    selected = random.sample(all_images, min(16, len(all_images)))
+    
+    # Сетка 4x4 для 16 изображений
+    fig, axes = plt.subplots(4, 4, figsize=(20, 20))
+    axes = axes.flatten()
+    
+    print(f"\n{len(selected)} случайных изображений из второй итерации")
+    
+    for idx, img_file in enumerate(selected):
+        img_path = os.path.join(images_path, img_file)
+        results = model_second(img_path)
+        boxes = results[0].boxes
+        
+        # Отображаем изображение
+        axes[idx].imshow(results[0].plot())
+        axes[idx].set_title(f'{img_file[:20]}...\n({len(boxes)} об.)', fontsize=8)
+        axes[idx].axis('off')
+    
+    # Скрываем неиспользованные оси (если меньше 16 изображений)
+    for idx in range(len(selected), 16):
+        axes[idx].axis('off')
+    
+    plt.suptitle(f'Примеры детекции второй итерации ({len(selected)} изображений)', fontsize=16)
+    plt.tight_layout()
+    plt.show()
+    
+    
+    print("\nСохраненные валидационные батчи по второй итерации:")
+    
+    second_iter_path = 'runs/detect/exp_second_iter'
+    if os.path.exists(second_iter_path):
+        val_batches = [f for f in os.listdir(second_iter_path) 
+                       if f.startswith('val_batch') and f.endswith('.jpg')]
+        
+        if val_batches:
+            for i, batch in enumerate(val_batches[:2]):
+                print(f"\n   Батч {i+1}: {batch}")
+                # Создаем отдельную фигуру для каждого батча
+                plt.figure(figsize=(10, 8))
+                img = plt.imread(f'{second_iter_path}/{batch}')
+                plt.imshow(img)
+                plt.title(f'{batch}')
+                plt.axis('off')
+                plt.show()
+        else:
+            print("   Нет сохраненных валидационных батчей")
+    else:
+        print(f"   Папка {second_iter_path} не найдена")
+    
+    # Сравнение с первой итерацией
+    if len(selected) > 0:
+        print("\nСравнение детекций первой и второй итерации")
+        
+        test_img = selected[0]
+        img_path = os.path.join(images_path, test_img)
+        
+        model_first = YOLO('runs/detect/first_iteration/weights/best.pt')
+        
+        res1 = model_first(img_path)
+        res2 = model_second(img_path)
+        
+        fig, axes = plt.subplots(1, 2, figsize=(15, 7))
+        
+        axes[0].imshow(res1[0].plot())
+        axes[0].set_title(f'Первая итерация\n{len(res1[0].boxes)} объектов', fontsize=14)
+        axes[0].axis('off')
+        
+        axes[1].imshow(res2[0].plot())
+        axes[1].set_title(f'Вторая итерация\n{len(res2[0].boxes)} объектов', fontsize=14)
+        axes[1].axis('off')
+        
+        plt.suptitle(f'Сравнение на изображении: {test_img}', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+        
+        print("\nСравнение на конкретном примере:")
+        print(f"{'Параметр':<20} {'1 итерация':<15} {'2 итерация':<15}")
+        print(f"{'Найдено объектов':<20} {len(res1[0].boxes):<15} {len(res2[0].boxes):<15}")
+        
+        if len(res1[0].boxes) > 0 and len(res2[0].boxes) > 0:
+            conf1 = res1[0].boxes.conf.mean().item()
+            conf2 = res2[0].boxes.conf.mean().item()
+            print(f"{'Ср. уверенность':<20} {conf1:<15.3f} {conf2:<15.3f}")
+else:
+    print("Папка с изображениями не найдена")
+
+
+print("\nИтоги:")
+
+# Определяем целевую метрику
+target_change = precision_2 - p1
+
+print(f"\nЦелевая метрика (Precision): {p1:.4f} → {precision_2:.4f}")
+
+if target_change > 0:
+    print(f"\nГипотеза подтвердилась")
+    print(f"   Precision улучшилась на {target_change:.4f} ({target_change*100:.1f}%)")
+else:
+    print(f"\nГипотеза не подтвердилась")
+    print(f"   Precision ухудшилась на {abs(target_change):.4f}")
+
+print("\nОбщий итог:")
+print(f"    Лучшая Precision: {max(p1, precision_2):.4f}")
+print(f"    Лучший Recall: {max(r1, recall_2):.4f}")
+print(f"    Лучший mAP@0.5: {max(m1, map50_2):.4f}")
